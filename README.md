@@ -1,6 +1,7 @@
 `python -m venv venv `<br />
 `venv\Scripts\activate` <br />
-`pip install unstructured[local-inference] pymupdf Pillow langchain-google-genai`
+`pip install unstructured[local-inference] pymupdf Pillow langchain-google-genai` <br />
+`pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128`
 >  - For unstructured with OCR, you might need Tesseract installed on your system:
 > -On Ubuntu: sudo apt-get install tesseract-ocr
 >- On macOS: brew install tesseract
