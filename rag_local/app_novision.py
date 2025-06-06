@@ -1,4 +1,5 @@
 # app.py
+
 import os
 import streamlit as st
 import traceback
@@ -7,14 +8,6 @@ from pypdf import PdfReader
 import fitz  # PyMuPDF
 from unstructured.partition.pdf import partition_pdf
 from unstructured.cleaners.core import clean
-import base64
-from io import BytesIO
-from PIL import Image
-import re
-import pandas as pd
-
-# Import HumanMessage
-from langchain_core.messages import HumanMessage
 
 # ---------------------- IMPORT FOR EMBEDDINGS ----------------------
 from sentence_transformers import SentenceTransformer
@@ -29,7 +22,6 @@ from langchain_community.chat_models import ChatOllama
 from langchain.chains import LLMChain
 from langchain.chains.combine_documents.stuff import StuffDocumentsChain
 from langchain.chains.combine_documents.map_reduce import MapReduceDocumentsChain
-# --------------------------------------------------------------------
 # --------------------------------------------------------------------
 
 # -------------- GLOBAL VARIABLES & SESSION STATE SETUP -------------
@@ -49,75 +41,7 @@ LOCAL_EMBEDDING_PATH = r"C:\Users\kniss\rag\models\all-MiniLM-L6-v2"  # Make sur
 
 if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
-
-# --- Vision model setup ---
-if "vision_model" not in st.session_state:
-    st.session_state.vision_model = None  # Initialize vision model
 # --------------------------------------------------------------------
-
-# ---------------------- VISION FUNCTIONS (COPIED FROM OLD APP) ----------------------
-
-def pil_image_to_base64(pil_img: Image.Image) -> str:
-    """
-    Convert a PIL Image to a Base64-encoded JPEG string (no data URI prefix).
-    """
-    buffered = BytesIO()
-    pil_img.save(buffered, format="JPEG")  # You can change format if needed
-    img_bytes = buffered.getvalue()
-    return base64.b64encode(img_bytes).decode("utf-8")   # Encode raw bytes to Base64
-
-def get_vision_model():
-    """
-    Initialize a local Gemma 3 multimodal model via Ollama.  Requires 'gemma3:27b' (or other Gemma 3 variant) be pulled locally.
-    """
-    try:
-        model = ChatOllama(model="gemma3:27b", temperature=0.3)  # Use local Gemma 3 27B via Ollama
-        return model
-    except Exception as e:
-        st.warning(f"Could not initialize local Gemma 3 vision model: {e}")
-        return None
-
-def get_image_description(image_bytes: bytes, vision_model_instance):
-    """
-    Describe an image using Gemma 3 via Ollama. Wrap the Base64 string in a data URI and use 'type': 'image_url'.
-    """
-    if not vision_model_instance:
-        return "Image captioning disabled (no local vision model available)."
-    try:
-        # Load the image into PIL and convert to RGB
-        pil_img = Image.open(BytesIO(image_bytes)).convert("RGB")
-        raw_b64 = pil_image_to_base64(pil_img)              # Convert to Base64 string
-        data_uri = f"data:image/jpeg;base64,{raw_b64}"      # Prefix with data URI scheme
-
-        # Construct an 'image_url' block (required by ChatOllama) instead of 'image'/'data'
-        image_block = {
-            "type": "image_url",    # Must be exactly 'image_url' for ChatOllama
-            "image_url": data_uri   # Pass the data URI string here
-        }
-        # Create a text block with instructions for describing the image
-        text_block = {
-            "type": "text",
-            "text": (
-                "Describe this image, focusing on any data, graphs, or formulas visible. "
-                "If it's a graph, describe its type, axes, and trend. "
-                "If it's a table, extract its content in a structured way. "
-                "If it's a formula, represent it in text or LaTeX if possible. "
-                "If it's a diagram, explain its components and relationships."
-            ),
-        }
-
-        # Combine text and image blocks into a single HumanMessage
-        human_message = HumanMessage(content=[text_block, image_block])
-
-        # Use predict_messages to get a BaseMessage instead of nested LLMResult
-        response_msg = vision_model_instance.predict_messages([human_message])
-        return response_msg.content  # The textual description
-
-    except Exception as e:
-        st.error(f"Error generating image description: {e}")
-        return "Error generating image description."
-
-# ---------------------- END VISION FUNCTIONS ----------------------
 
 # ---------------------- PROMPTS FOR MAP-REDUCE CHAIN ----------------------
 MAP_PROMPT = PromptTemplate(
@@ -139,7 +63,7 @@ Intermediate Answer:""",
 #       so that PromptTemplate does not treat them as missing variables.
 COMBINE_PROMPT = PromptTemplate(
     template="""
-You have been given multiple INTERMEDIATE ANSWERS from different excerpts, some of which may include descriptions of images.
+You have been given multiple INTERMEDIATE ANSWERS from different excerpts.
 Combine them into a final, coherent answer to the QUESTION below.
 If none of the intermediate answers contain the requested information, respond exactly with "The answer is not available in the provided documents."
 
@@ -218,30 +142,22 @@ def get_text_chunks(full_text: str):
 
 def get_documents_from_pdfs(pdf_files):
     all_text = []
-    vision_model_instance = st.session_state.get("vision_model") # Get vision model from session state
-    if vision_model_instance is None:
-        st.session_state.vision_model = get_vision_model()
-        vision_model_instance = st.session_state.vision_model
-
     for pdf_file in pdf_files:
         st.write(f"DEBUG: Processing PDF: {pdf_file.name}")
         try:
             pdf_file.seek(0)
-            raw_bytes = pdf_file.read()
-            pdf_file.seek(0)
-
             elements = partition_pdf(
                 file=pdf_file, strategy="hi_res", infer_table_structure=True,
-                extract_images_in_pdf=False  # Important:  We'll handle images separately
+                extract_images_in_pdf=False
             )
             texts = []
             for el in elements:
                 if "Table" in str(type(el)):
                     html = getattr(el.metadata, "text_as_html", None)
                     if html:
-                        texts.append(f"\n[TABLE HTML START]\n{html}\n[TABLE HTML END]\n")
+                        texts.append(html)
                     else:
-                        texts.append(f"\n[TABLE START]\n{el.text}\n[TABLE END]\n")
+                        texts.append(el.text)
                 else:
                     cleaned = clean(el.text, bullets=True, extra_whitespace=True)
                     if cleaned.strip():
@@ -266,37 +182,6 @@ def get_documents_from_pdfs(pdf_files):
                     st.warning(f"No text extracted from {pdf_file.name} via PyPDF fallback.")
             except Exception as py_err:
                 st.error(f"Failed to extract PDF text from {pdf_file.name} with PyPDF: {py_err}")
-
-        # ------ IMAGE PROCESSING (INTEGRATED) ------
-        try:
-            doc = fitz.open(stream=raw_bytes, filetype="pdf")
-            image_descriptions = []
-            if vision_model_instance:
-                img_counter = 1
-                for page_idx in range(len(doc)):
-                    for img_info in doc.get_page_images(page_idx):
-                        xref = img_info[0]
-                        base_img = doc.extract_image(xref)
-                        img_bytes = base_img["image"]
-
-                        st.write(f"DEBUG: Describing image {img_counter} on page {page_idx+1} of {pdf_file.name}...")
-                        desc = get_image_description(img_bytes, vision_model_instance)
-                        image_descriptions.append(
-                            f"\n[IMAGE {img_counter} ON PAGE {page_idx+1} DESCRIPTION START]\n{desc}\n[IMAGE {img_counter} DESCRIPTION END]\n"
-                        )
-                        img_counter += 1
-                if image_descriptions:
-                   all_text.append("\n".join(image_descriptions)) #Add image descriptions to the text to be chunked
-
-                st.write(f"DEBUG: Described {img_counter-1} image(s) for {pdf_file.name}.")
-            else:
-                st.warning("Vision model not available. Skipping image descriptions.")
-            doc.close()
-        except Exception as e:
-            st.error(f"Error extracting/describing images from {pdf_file.name}: {e}")
-            st.error(f"Traceback: {traceback.format_exc()}")
-        # ------ END IMAGE PROCESSING ------
-
     return "\n\n--- DOCUMENT BOUNDARY ---\n\n".join(all_text)
 # ---------------------------------------------------------------------
 
@@ -379,9 +264,7 @@ def user_input(user_question, vector_store):
                 # st.write("DEBUG: raw_answer variable is None or empty after attempting to extract.")
 
                 with st.expander("Show Retrieved Context Chunks"):
-                    for i, doc_ret in enumerate(docs
-                    
-                         ):
+                    for i, doc_ret in enumerate(docs):
                         snippet = doc_ret.page_content
                         display_snippet = snippet[:500] + "..." if len(snippet) > 500 else snippet
                         st.markdown(f"**Chunk {i+1}:**")
@@ -403,12 +286,6 @@ st.title("🤖 Offline RAG with Local all-MiniLM-L6-v2 & MapReduce Chain")
 with st.sidebar:
     st.subheader("Upload and Process PDFs")
     pdf_docs = st.file_uploader("Upload PDF files here", type=["pdf"], accept_multiple_files=True)
-
-    # Initialize the vision model button
-    if st.session_state.vision_model is None:
-        if st.button("Initialize Vision Model"):
-             st.session_state.vision_model = get_vision_model()
-             st.rerun() # Refresh UI now that vision model exists
 
     if st.button("Process Documents 🚀", disabled=not pdf_docs):
         if pdf_docs:
@@ -452,4 +329,4 @@ user_question = st.text_input(
 if user_question:
     # st.write("DEBUG: User question submitted:", user_question)  # DEBUG
     user_input(user_question, st.session_state.vector_store)
-# --------------------------------------------------------------------
+# -------------------------------------------------------------------- Ask a Question 🤔
