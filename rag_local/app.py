@@ -16,13 +16,13 @@ import pandas as pd
 # Import HumanMessage
 from langchain_core.messages import HumanMessage
 
-# ---------------------- IMPORT FOR EMBEDDINGS ----------------------
-from sentence_transformers import SentenceTransformer
-from langchain_huggingface import HuggingFaceEmbeddings
+# ---------------------- IMPORT FOR EMBEDDINGS (CHANGED) ----------------------
+# from sentence_transformers import SentenceTransformer             # <-- REMOVED
+# from langchain_huggingface import HuggingFaceEmbeddings           # <-- REMOVED
+from langchain_community.embeddings import OllamaEmbeddings     # <-- ADDED
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
-# load_qa_chain is not used in this version due to manual construction
 from langchain_community.chat_models import ChatOllama
 
 # For manual chain construction
@@ -35,9 +35,11 @@ from langchain.chains.combine_documents.map_reduce import MapReduceDocumentsChai
 # -------------- GLOBAL VARIABLES & SESSION STATE SETUP -------------
 load_dotenv()
 
+model_path = os.getenv("OLLAMA_MODEL_PATH", "gemma3:27b")
+
 try:
-    llm = ChatOllama(model="gemma3:27b", temperature=0.0)
-    st.session_state.llm_initialized = True  # Keep track if LLM is good
+    llm = ChatOllama(model=model_path, temperature=0.0)
+    st.session_state.llm_initialized = True
 except Exception as e:
     st.error(f"Could not initialize local Gemma 3 via Ollama: {e}")
     llm = None
@@ -45,56 +47,40 @@ except Exception as e:
 
 CHUNK_SIZE = 2000
 CHUNK_OVERLAP = 200
-LOCAL_EMBEDDING_PATH = r"C:\Users\kniss\rag\models\all-MiniLM-L6-v2"  # Make sure this path is correct
+# LOCAL_EMBEDDING_PATH = r"C:\Users\kniss\rag\models\all-MiniLM-L6-v2" # <-- REMOVED
+OLLAMA_EMBEDDING_MODEL = "bge-m3" # <-- ADDED: Name of the embedding model in Ollama
 
 if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
 
-# --- Vision model setup ---
 if "vision_model" not in st.session_state:
-    st.session_state.vision_model = None  # Initialize vision model
+    st.session_state.vision_model = None
 # --------------------------------------------------------------------
 
-# ---------------------- VISION FUNCTIONS (COPIED FROM OLD APP) ----------------------
-
+# ---------------------- VISION FUNCTIONS (UNCHANGED) ----------------------
+# (Your vision functions remain the same, so they are omitted here for brevity)
 def pil_image_to_base64(pil_img: Image.Image) -> str:
-    """
-    Convert a PIL Image to a Base64-encoded JPEG string (no data URI prefix).
-    """
     buffered = BytesIO()
-    pil_img.save(buffered, format="JPEG")  # You can change format if needed
+    pil_img.save(buffered, format="JPEG")
     img_bytes = buffered.getvalue()
-    return base64.b64encode(img_bytes).decode("utf-8")   # Encode raw bytes to Base64
+    return base64.b64encode(img_bytes).decode("utf-8")
 
 def get_vision_model():
-    """
-    Initialize a local Gemma 3 multimodal model via Ollama.  Requires 'gemma3:27b' (or other Gemma 3 variant) be pulled locally.
-    """
     try:
-        model = ChatOllama(model="gemma3:27b", temperature=0.3)  # Use local Gemma 3 27B via Ollama
+        model = ChatOllama(model=model_path, temperature=0.3)
         return model
     except Exception as e:
         st.warning(f"Could not initialize local Gemma 3 vision model: {e}")
         return None
 
 def get_image_description(image_bytes: bytes, vision_model_instance):
-    """
-    Describe an image using Gemma 3 via Ollama. Wrap the Base64 string in a data URI and use 'type': 'image_url'.
-    """
     if not vision_model_instance:
         return "Image captioning disabled (no local vision model available)."
     try:
-        # Load the image into PIL and convert to RGB
         pil_img = Image.open(BytesIO(image_bytes)).convert("RGB")
-        raw_b64 = pil_image_to_base64(pil_img)              # Convert to Base64 string
-        data_uri = f"data:image/jpeg;base64,{raw_b64}"      # Prefix with data URI scheme
-
-        # Construct an 'image_url' block (required by ChatOllama) instead of 'image'/'data'
-        image_block = {
-            "type": "image_url",    # Must be exactly 'image_url' for ChatOllama
-            "image_url": data_uri   # Pass the data URI string here
-        }
-        # Create a text block with instructions for describing the image
+        raw_b64 = pil_image_to_base64(pil_img)
+        data_uri = f"data:image/jpeg;base64,{raw_b64}"
+        image_block = {"type": "image_url", "image_url": data_uri}
         text_block = {
             "type": "text",
             "text": (
@@ -105,21 +91,16 @@ def get_image_description(image_bytes: bytes, vision_model_instance):
                 "If it's a diagram, explain its components and relationships."
             ),
         }
-
-        # Combine text and image blocks into a single HumanMessage
         human_message = HumanMessage(content=[text_block, image_block])
-
-        # Use predict_messages to get a BaseMessage instead of nested LLMResult
         response_msg = vision_model_instance.predict_messages([human_message])
-        return response_msg.content  # The textual description
-
+        return response_msg.content
     except Exception as e:
         st.error(f"Error generating image description: {e}")
         return "Error generating image description."
-
 # ---------------------- END VISION FUNCTIONS ----------------------
 
-# ---------------------- PROMPTS FOR MAP-REDUCE CHAIN ----------------------
+
+# ---------------------- PROMPTS (UNCHANGED) ----------------------
 MAP_PROMPT = PromptTemplate(
     template="""
 Use the following DOCUMENT EXCERPT to answer the QUESTION as accurately as possible.
@@ -135,8 +116,6 @@ Intermediate Answer:""",
     input_variables=["context", "question"]
 )
 
-# NOTE: Every single {…} inside the “For example:” section below has been doubled to {{…}}
-#       so that PromptTemplate does not treat them as missing variables.
 COMBINE_PROMPT = PromptTemplate(
     template="""
 You have been given multiple INTERMEDIATE ANSWERS from different excerpts, some of which may include descriptions of images.
@@ -163,50 +142,52 @@ Final Answer (formatted with LaTeX for equations):""",
 )
 # ---------------------------------------------------------------------
 
-# ---------------------- EMBEDDING LOADING & CACHING ----------------------
+# ---------------------- EMBEDDING LOADING & CACHING (CHANGED) ----------------------
 @st.cache_resource
-def load_local_embeddings():
+def load_ollama_embeddings(): # <-- CHANGED: Renamed function for clarity
     """
-    Load the SentenceTransformer model once and wrap it in HuggingFaceEmbeddings.
+    Load the bge-m3 embedding model from Ollama.
     """
-    # st.write("DEBUG: Attempting to load SentenceTransformer model...")
+    st.write(f"DEBUG: Attempting to load Ollama embedding model: {OLLAMA_EMBEDDING_MODEL}")
     try:
-        _ = SentenceTransformer(LOCAL_EMBEDDING_PATH, local_files_only=True)
-        # st.write("DEBUG: SentenceTransformer model loaded for check.")
-        embeddings = HuggingFaceEmbeddings(
-            model_name=LOCAL_EMBEDDING_PATH,
-            model_kwargs={"local_files_only": True}
-        )
-        # st.write("DEBUG: HuggingFaceEmbeddings wrapped successfully.")
+        # This is the main change: using OllamaEmbeddings
+        embeddings = OllamaEmbeddings(model=OLLAMA_EMBEDDING_MODEL)
+        # You can do a quick test embedding to ensure it's working
+        _ = embeddings.embed_query("Test query to initialize and check the model.")
+        st.write("DEBUG: Ollama embeddings loaded successfully.")
         return embeddings
     except Exception as e:
-        st.error(f"Error loading local embeddings from {LOCAL_EMBEDDING_PATH}: {e}")
+        st.error(f"Error loading Ollama embeddings model '{OLLAMA_EMBEDDING_MODEL}': {e}")
+        st.error("Please ensure Ollama is running and you have pulled the model with 'ollama pull bge-m3'")
         st.error(f"Traceback: {traceback.format_exc()}")
         return None
-
 
 @st.cache_data
 def get_vector_store(text_chunks):
     """
-    Build a FAISS index from text_chunks using pre-loaded local HuggingFaceEmbeddings.
+    Build a FAISS index from text_chunks using Ollama bge-m3 embeddings.
     """
     if not text_chunks:
         st.warning("DEBUG: No text chunks provided to get_vector_store.")
         return None
     try:
-        embeddings = load_local_embeddings()
+        # <-- CHANGED: Call the new function
+        embeddings = load_ollama_embeddings()
         if embeddings is None:
             st.error("DEBUG: Embeddings are None, cannot create vector store.")
             return None
-        # st.write(f"DEBUG: Creating FAISS vector store from {len(text_chunks)} chunks.")
         vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
-        # st.write("DEBUG: FAISS vector store created.")
         return vector_store
     except Exception as e:
         st.error(f"Error creating FAISS store: {e}")
         st.error(f"Traceback: {traceback.format_exc()}")
         return None
 # ----------------------------------------------------------------------
+
+#
+# --- The rest of your code (PDF extraction, user input, Streamlit layout) ---
+# --- remains exactly the same. It is included below without changes.      ---
+#
 
 # ---------------------- PDF TEXT EXTRACTION ---------------------------
 def get_text_chunks(full_text: str):
@@ -218,7 +199,7 @@ def get_text_chunks(full_text: str):
 
 def get_documents_from_pdfs(pdf_files):
     all_text = []
-    vision_model_instance = st.session_state.get("vision_model") # Get vision model from session state
+    vision_model_instance = st.session_state.get("vision_model")
     if vision_model_instance is None:
         st.session_state.vision_model = get_vision_model()
         vision_model_instance = st.session_state.vision_model
@@ -232,7 +213,7 @@ def get_documents_from_pdfs(pdf_files):
 
             elements = partition_pdf(
                 file=pdf_file, strategy="hi_res", infer_table_structure=True,
-                extract_images_in_pdf=False  # Important:  We'll handle images separately
+                extract_images_in_pdf=False
             )
             texts = []
             for el in elements:
@@ -286,7 +267,7 @@ def get_documents_from_pdfs(pdf_files):
                         )
                         img_counter += 1
                 if image_descriptions:
-                   all_text.append("\n".join(image_descriptions)) #Add image descriptions to the text to be chunked
+                   all_text.append("\n".join(image_descriptions))
 
                 st.write(f"DEBUG: Described {img_counter-1} image(s) for {pdf_file.name}.")
             else:
@@ -302,11 +283,6 @@ def get_documents_from_pdfs(pdf_files):
 
 # ---------------------- USER QUERY & QA CHAIN --------------------------
 def user_input(user_question, vector_store):
-    """
-    Perform similarity search, build the QA chain, query, and display results.
-    """
-    # st.write("DEBUG: Entered user_input function.")  # DEBUG
-
     if not vector_store:
         st.warning("Please upload and process documents first (vector_store is None).")
         return
@@ -316,57 +292,43 @@ def user_input(user_question, vector_store):
         return
 
     try:
-        # st.write("DEBUG: vector_store and LLM exist, proceeding with similarity search.")  # DEBUG
         docs = vector_store.similarity_search(user_question, k=3)
-        # st.write(f"DEBUG: Found {len(docs)} documents from similarity search.")  # DEBUG
-        if docs:
-            # for i, d in enumerate(docs):
-                # st.write(f"DEBUG: Doc {i} content (first 100 chars): {d.page_content[:100]}")  # DEBUG
+        if not docs:
+            st.info("No relevant documents found for your question.")
+            return
 
-            if not docs:
-                st.info("No relevant documents found for your question.")
-                return
-
-        # st.write("DEBUG: Proceeding to build MapReduce chain.")  # DEBUG
-        # ---- Manual Chain Construction ----
         map_llm_chain = LLMChain(llm=llm, prompt=MAP_PROMPT)
         combine_llm_chain = LLMChain(llm=llm, prompt=COMBINE_PROMPT)
         stuff_combine_documents_chain = StuffDocumentsChain(
             llm_chain=combine_llm_chain,
-            document_variable_name="summaries",  # Matches {summaries} in COMBINE_PROMPT
+            document_variable_name="summaries",
         )
         chain = MapReduceDocumentsChain(
-            llm_chain=map_llm_chain,  # For the map step
-            reduce_documents_chain=stuff_combine_documents_chain,  # For the reduce step
-            document_variable_name="context",  # Matches {context} in MAP_PROMPT
+            llm_chain=map_llm_chain,
+            reduce_documents_chain=stuff_combine_documents_chain,
+            document_variable_name="context",
             input_key="input_documents",
             output_key="output_text",
         )
-        # st.write(f"DEBUG: MapReduceDocumentsChain created.")  # DEBUG
 
         input_data = {"input_documents": docs, "question": user_question}
-        # st.write(f"DEBUG: Input data for chain: question='{input_data['question']}', num_docs={len(input_data['input_documents'])}")  # DEBUG
 
         raw_answer = None
         with st.spinner("Querying the documents... 🤔 Please wait, this can take a moment."):
             response = chain(input_data, return_only_outputs=True)
 
-        # st.write(f"DEBUG: Raw response from chain: {response}")  # DEBUG
-
         if response and isinstance(response, dict) and "output_text" in response:
             raw_answer = response["output_text"]
-        elif response and isinstance(response, str):  # Fallback if chain directly returns string
+        elif response and isinstance(response, str):
             raw_answer = response
         else:
             st.warning("The LLM did not return an answer in the expected dictionary format or the 'output_text' key was missing.")
-            # st.write("DEBUG: Full response object from chain:", response)
 
         if raw_answer and raw_answer.strip() and raw_answer.lower() not in [
             "information not found in this chunk.",
             "the answer is not available in the provided documents."
         ]:
             st.subheader("Answer:")
-            # Use st.markdown to render text which might include LaTeX
             st.markdown(raw_answer, unsafe_allow_html=True)
         elif raw_answer and raw_answer.lower() in [
             "information not found in this chunk.",
@@ -375,17 +337,13 @@ def user_input(user_question, vector_store):
             st.info(raw_answer)
         else:
             st.info("No specific answer was generated by the LLM, or the answer was empty.")
-            if not raw_answer:
-                # st.write("DEBUG: raw_answer variable is None or empty after attempting to extract.")
 
-                with st.expander("Show Retrieved Context Chunks"):
-                    for i, doc_ret in enumerate(docs
-                    
-                         ):
-                        snippet = doc_ret.page_content
-                        display_snippet = snippet[:500] + "..." if len(snippet) > 500 else snippet
-                        st.markdown(f"**Chunk {i+1}:**")
-                        st.caption(display_snippet)
+            with st.expander("Show Retrieved Context Chunks"):
+                for i, doc_ret in enumerate(docs):
+                    snippet = doc_ret.page_content
+                    display_snippet = snippet[:500] + "..." if len(snippet) > 500 else snippet
+                    st.markdown(f"**Chunk {i+1}:**")
+                    st.caption(display_snippet)
 
     except Exception as e:
         st.error(f"Error during question processing: {e}")
@@ -398,17 +356,17 @@ def user_input(user_question, vector_store):
 
 # ---------------------- STREAMLIT LAYOUT ------------------------------
 st.set_page_config(page_title="📄 Offline RAG with MapReduce", layout="wide")
-st.title("🤖 Offline RAG with Local all-MiniLM-L6-v2 & MapReduce Chain")
+# <-- CHANGED: Updated title to reflect the new model
+st.title("🤖 Offline RAG with Ollama bge-m3 & MapReduce Chain")
 
 with st.sidebar:
     st.subheader("Upload and Process PDFs")
     pdf_docs = st.file_uploader("Upload PDF files here", type=["pdf"], accept_multiple_files=True)
 
-    # Initialize the vision model button
     if st.session_state.vision_model is None:
         if st.button("Initialize Vision Model"):
              st.session_state.vision_model = get_vision_model()
-             st.rerun() # Refresh UI now that vision model exists
+             st.rerun()
 
     if st.button("Process Documents 🚀", disabled=not pdf_docs):
         if pdf_docs:
@@ -417,7 +375,7 @@ with st.sidebar:
                 if full_text.strip():
                     chunks = get_text_chunks(full_text)
                     if chunks:
-                        st.write(f"DEBUG: Generated {len(chunks)} text chunks for vector store.")  # DEBUG
+                        st.write(f"DEBUG: Generated {len(chunks)} text chunks for vector store.")
                         vs = get_vector_store(chunks)
                         if vs:
                             st.session_state.vector_store = vs
@@ -450,6 +408,5 @@ user_question = st.text_input(
 )
 
 if user_question:
-    # st.write("DEBUG: User question submitted:", user_question)  # DEBUG
     user_input(user_question, st.session_state.vector_store)
 # --------------------------------------------------------------------
